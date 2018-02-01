@@ -1,5 +1,8 @@
-package kafkasparkwindows
+package kafkasparksql
 
+/**
+  * Created by nik on 1/2/18.
+  */
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming._
 import org.apache.spark.streaming.kafka010._
@@ -15,10 +18,11 @@ import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.spark.streaming.kafka010._
 import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
 import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
+import org.apache.spark.sql.functions.udf
 /**
   * Created by nik on 1/2/18.
   */
-object KafkaSparkWindows {
+object KafkaSparkSql {
   val topics = "twitterstream"    // command separated list of topics
   val brokers = "localhost:29092"   // comma separated list of broker:host
   val windowSize = Duration(30000L)          // 10 seconds
@@ -26,27 +30,29 @@ object KafkaSparkWindows {
   val checkpointInterval = Duration(20000L)  // 20 seconds
   val batchIntervalSeconds = 2
   val checkpointDir = "file:///tmp"
-
-
+  val sentiment = (s:String) => {
+    "positive"
+  }
   def creatingFunc(): StreamingContext = {
-    val sparkConf = new SparkConf().setAppName("KafkaSparkWindows")
+    val sparkConf = new SparkConf()
+      .setAppName("KafkaSparkWindows")
+
+    // Create a StreamingContext
     val ssc = new StreamingContext(sparkConf, Seconds(batchIntervalSeconds))
 
-    val wordStream = createKafkaStream(ssc).map(x => (x, 1))
-    val runningCountStream = wordStream.reduceByKeyAndWindow((a:Int,b:Int) => (a + b), Seconds(30), Seconds(10))
-
-    runningCountStream.checkpoint(checkpointInterval)
-
-    runningCountStream.print()
     val sqlContext = SparkSession
       .builder()
       .getOrCreate().sqlContext
+    sqlContext.udf.register("sentiment", sentiment)
+    val wordStream = createKafkaStream(ssc).foreachRDD(
+      rdd => {
+        val row = sqlContext.read.json(rdd.toString).toDF()
+          row.show
+        rdd.take(1)
 
-    runningCountStream.foreachRDD { rdd =>
-      sqlContext.createDataFrame(rdd).toDF("word", "count").createOrReplaceTempView("tweet")
-      rdd.take(1)
-      rdd.saveAsTextFile("file:///tmp/")
-    }
+        //.withColumn("sentiment", sentiment(co)).createOrReplaceTempView("tweet")
+      }
+    )
 
     ssc.remember(Minutes(1))
 
@@ -57,6 +63,7 @@ object KafkaSparkWindows {
   }
   def createKafkaStream(ssc: StreamingContext) = { //: DStream[(String, String)] = {
     val topicsSet = topics.split(",").toSet
+    //val kafkaParams = Map[String, String]("metadata.broker.list" -> brokers)
     val kafkaParams = Map[String, Object](
       "bootstrap.servers" -> "localhost:29092",
       "key.deserializer" -> classOf[StringDeserializer],
@@ -70,9 +77,10 @@ object KafkaSparkWindows {
       ssc,
       LocationStrategies.PreferConsistent,
       ConsumerStrategies.Subscribe[String, String](topicsSet, kafkaParams))
-    .map(record => (record.key, record.value))
+      .map(record => (record.key, record.value))
   }
   def main(args: Array[String]) {
+
     val stopActiveContext = true
     if (stopActiveContext) {
       StreamingContext.getActive.foreach { _.stop(stopSparkContext = false) }
@@ -85,3 +93,4 @@ object KafkaSparkWindows {
     ssc.awaitTerminationOrTimeout(batchIntervalSeconds * 5 * 1000)
   }
 }
+
