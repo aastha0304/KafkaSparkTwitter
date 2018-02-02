@@ -1,5 +1,5 @@
 
-name := "spark-kafka-streaming"
+name := "kafkasparkwindows"
 
 version := "1.0"
 

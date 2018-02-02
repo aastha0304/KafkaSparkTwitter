@@ -29,7 +29,10 @@ object KafkaSparkWindows {
 
 
   def creatingFunc(): StreamingContext = {
-    val sparkConf = new SparkConf().setAppName("KafkaSparkWindows")
+    val sparkConf = new SparkConf()
+      .setAppName("KafkaSparkWindows")
+      .setMaster("local[*]")
+
     val ssc = new StreamingContext(sparkConf, Seconds(batchIntervalSeconds))
 
     val wordStream = createKafkaStream(ssc).map(x => (x, 1))
@@ -41,7 +44,7 @@ object KafkaSparkWindows {
     val sqlContext = SparkSession
       .builder()
       .getOrCreate().sqlContext
-
+    import sqlContext.implicits._
     runningCountStream.foreachRDD { rdd =>
       sqlContext.createDataFrame(rdd).toDF("word", "count").createOrReplaceTempView("tweet")
       rdd.take(1)
