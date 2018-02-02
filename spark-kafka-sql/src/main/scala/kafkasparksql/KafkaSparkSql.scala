@@ -19,7 +19,9 @@ import org.apache.spark.streaming.kafka010._
 import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
 import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
 import org.apache.spark.sql.functions.udf
-/**
+import scala.util.parsing.json._
+import org.apache.spark.sql.Column
+import org.apache.spark.sql.functions._/**
   * Created by nik on 1/2/18.
   */
 object KafkaSparkSql {
@@ -29,25 +31,43 @@ object KafkaSparkSql {
   val slidingInterval = Duration(10000L)      // 2 seconds
   val checkpointInterval = Duration(20000L)  // 20 seconds
   val batchIntervalSeconds = 2
-  val checkpointDir = "file:///tmp"
-  val sentiment = (s:String) => {
-    "positive"
+  val checkpointDir = "file:///tmp/"
+
+  def main(args: Array[String]) {
+
+    val stopActiveContext = true
+    if (stopActiveContext) {
+      StreamingContext.getActive.foreach { _.stop(stopSparkContext = false) }
+    }
+
+    val ssc = StreamingContext.getActiveOrCreate(creatingFunc)
+
+    ssc.start()
+
+    ssc.awaitTerminationOrTimeout(batchIntervalSeconds * 5 * 1000)
   }
+
   def creatingFunc(): StreamingContext = {
     val sparkConf = new SparkConf()
       .setAppName("KafkaSparkWindows")
+      .setMaster("local")
+      .set("spark.sql.warehouse.dir","file:///tmp")
 
-    // Create a StreamingContext
-    val ssc = new StreamingContext(sparkConf, Seconds(batchIntervalSeconds))
-
-    val sqlContext = SparkSession
+    val spark = SparkSession
       .builder()
-      .getOrCreate().sqlContext
-    sqlContext.udf.register("sentiment", sentiment)
+      .config(sparkConf)
+      .getOrCreate()
+    import spark.sqlContext.implicits._
+    // Create a StreamingContext
+    val ssc = new StreamingContext(spark.sparkContext, Seconds(batchIntervalSeconds))
+//
+//    val sqlContext = SparkSession
+//      .builder()
+//      .getOrCreate().sqlContext
+    spark.udf.register("sentiment", sentiment _)
     val wordStream = createKafkaStream(ssc).foreachRDD(
       rdd => {
-        val row = sqlContext.read.json(rdd.toString).toDF()
-          row.show
+        rdd.map(row => parser(row._2)).toDF().withColumn("sentiment", callUDF("sentiment", col("value"))).show
         rdd.take(1)
 
         //.withColumn("sentiment", sentiment(co)).createOrReplaceTempView("tweet")
@@ -61,6 +81,35 @@ object KafkaSparkSql {
     println("Creating function called to create new StreamingContext")
     ssc
   }
+
+  def sentiment(s:String) : String = {
+    val positive = Array("like", "love", "good", "great", "happy", "cool", "the", "one", "that")
+    val negative = Array("hate", "bad", "stupid", "is")
+    var st = 0;
+    val words = s.split(" ")
+    positive.foreach(p =>
+      words.foreach(w =>
+        if(p==w) st = st+1
+      )
+    )
+
+    negative.foreach(p=>
+      words.foreach(w=>
+        if(p==w) st = st-1
+      )
+    )
+    if(st>0)
+      "positive"
+    else if(st<0)
+      "negative"
+    else
+      "neutral"
+  }
+
+  def parser(json: String): String = {
+    JSON.parseFull(json).get.asInstanceOf[Map[String, Any]].get("text").toString
+  }
+
   def createKafkaStream(ssc: StreamingContext) = { //: DStream[(String, String)] = {
     val topicsSet = topics.split(",").toSet
     //val kafkaParams = Map[String, String]("metadata.broker.list" -> brokers)
@@ -78,19 +127,6 @@ object KafkaSparkSql {
       LocationStrategies.PreferConsistent,
       ConsumerStrategies.Subscribe[String, String](topicsSet, kafkaParams))
       .map(record => (record.key, record.value))
-  }
-  def main(args: Array[String]) {
-
-    val stopActiveContext = true
-    if (stopActiveContext) {
-      StreamingContext.getActive.foreach { _.stop(stopSparkContext = false) }
-    }
-
-    val ssc = StreamingContext.getActiveOrCreate(creatingFunc)
-
-    ssc.start()
-
-    ssc.awaitTerminationOrTimeout(batchIntervalSeconds * 5 * 1000)
   }
 }
 

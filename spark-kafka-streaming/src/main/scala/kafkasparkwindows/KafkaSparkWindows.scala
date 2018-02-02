@@ -27,6 +27,18 @@ object KafkaSparkWindows {
   val batchIntervalSeconds = 2
   val checkpointDir = "file:///tmp"
 
+  def main(args: Array[String]) {
+    val stopActiveContext = true
+    if (stopActiveContext) {
+      StreamingContext.getActive.foreach { _.stop(stopSparkContext = false) }
+    }
+
+    val ssc = StreamingContext.getActiveOrCreate(creatingFunc)
+
+    ssc.start()
+
+    ssc.awaitTerminationOrTimeout(batchIntervalSeconds * 5 * 1000)
+  }
 
   def creatingFunc(): StreamingContext = {
     val sparkConf = new SparkConf()
@@ -48,7 +60,7 @@ object KafkaSparkWindows {
     runningCountStream.foreachRDD { rdd =>
       sqlContext.createDataFrame(rdd).toDF("word", "count").createOrReplaceTempView("tweet")
       rdd.take(1)
-      rdd.saveAsTextFile("file:///tmp/")
+      rdd.map(row => parser(row._2).saveAsTextFile("file:///tmp/")
     }
 
     ssc.remember(Minutes(1))
@@ -58,6 +70,12 @@ object KafkaSparkWindows {
     println("Creating function called to create new StreamingContext")
     ssc
   }
+
+  def parser(json: String): String = {
+    import scala.util.parsing.json.JSON
+    JSON.parseFull(json).get.asInstanceOf[Map[String, Any]].get("text").toString
+  }
+
   def createKafkaStream(ssc: StreamingContext) = { //: DStream[(String, String)] = {
     val topicsSet = topics.split(",").toSet
     val kafkaParams = Map[String, Object](
@@ -74,17 +92,5 @@ object KafkaSparkWindows {
       LocationStrategies.PreferConsistent,
       ConsumerStrategies.Subscribe[String, String](topicsSet, kafkaParams))
     .map(record => (record.key, record.value))
-  }
-  def main(args: Array[String]) {
-    val stopActiveContext = true
-    if (stopActiveContext) {
-      StreamingContext.getActive.foreach { _.stop(stopSparkContext = false) }
-    }
-
-    val ssc = StreamingContext.getActiveOrCreate(creatingFunc)
-
-    ssc.start()
-
-    ssc.awaitTerminationOrTimeout(batchIntervalSeconds * 5 * 1000)
   }
 }
